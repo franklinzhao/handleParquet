@@ -1,2 +1,92 @@
-test from file.
-guolin zhao
+Here's a Java program that reads Parquet files from an AWS S3 bucket and stores the data in a HashMap:
+
+Java
+import com.amazonaws.AmazonServiceException;
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.s3.model.GetObjectRequest;
+import com.amazonaws.services.s3.model.S3Object;
+import org.apache.parquet.avro.AvroParquetReader;
+import org.apache.parquet.hadoop.api.ReadSupport;
+import org.apache.parquet.schema.MessageType;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class ParquetToHashMap {
+
+    public static void main(String[] args) throws IOException {
+        // Replace these with your details
+        String bucketName = "your-bucket-name";
+        String prefix = "your-file-prefix/"; // Optional prefix for filtering files
+        String credentialsProvider = "your-credentials-provider"; // e.g., "AWSEnvironmentCredentialsProvider"
+
+        // Create an S3 client
+        AmazonS3 s3Client = AmazonS3ClientBuilder.standard()
+                .withCredentials(getCredentialsProvider(credentialsProvider))
+                .build();
+
+        // HashMap to store data (key: file name, value: list of Parquet row values)
+        Map<String, List<Object>> dataMap = new HashMap<>();
+
+        // List all objects with the specified prefix (or all objects if no prefix)
+        List<S3ObjectSummary> objectSummaries = s3Client.listObjectsV2(bucketName, prefix).getObjectSummaries();
+
+        for (S3ObjectSummary summary : objectSummaries) {
+            String key = summary.getKey();
+
+            // Download the object
+            GetObjectRequest request = new GetObjectRequest(bucketName, key);
+            S3Object object = s3Client.getObject(request);
+
+            try (ByteArrayInputStream inputStream = new ByteArrayInputStream(object.getObjectContent().readAllBytes())) {
+                // Read Parquet data using AvroParquetReader
+                MessageType schema = readParquetSchema(inputStream);
+                ReadSupport<List<Object>> readSupport = AvroParquetReader.supportsAvro(schema) ? AvroParquetReader.class : null;
+                if (readSupport == null) {
+                    throw new IOException("Unsupported Parquet format: Avro required");
+                }
+
+                List<Object> rows = AvroParquetReader.<List<Object>>builder(schema)
+                        .withReadSupport(readSupport)
+                        .withInputStream(inputStream)
+                        .build()
+                        .readAll();
+
+                dataMap.put(key, rows);
+            } catch (AmazonServiceException e) {
+                System.err.println("Error downloading object: " + key + ", " + e.getMessage());
+            }
+        }
+
+        // Process the data in the HashMap (optional)
+        System.out.println("Data Map:");
+        for (Map.Entry<String, List<Object>> entry : dataMap.entrySet()) {
+            System.out.println("File: " + entry.getKey());
+            System.out.println("  - Rows:");
+            for (Object row : entry.getValue()) {
+                System.out.println("    - " + row);
+            }
+        }
+    }
+
+    private static AWSCredentialsProvider getCredentialsProvider(String providerName) throws IOException {
+        // Replace with your specific credential provider logic
+        // Here's an example using AWSEnvironmentCredentialsProvider
+        if (providerName.equals("AWSEnvironmentCredentialsProvider")) {
+            return new com.amazonaws.auth.AWSEnvironmentCredentialsProvider();
+        } else {
+            throw new IOException("Unsupported credentials provider: " + providerName);
+        }
+    }
+
+    private static MessageType readParquetSchema(ByteArrayInputStream inputStream) throws IOException {
+        try (ByteArrayInputStream schemaStream = new ByteArrayInputStream(inputStream.readAllBytes())) {
+            return MessageType.readFromParquet(schemaStream);
+        }
+    }
+}
